@@ -5,6 +5,9 @@ import asyncio
 
 client = discord.Client()
 
+#insert bot token here
+discord_token = ''
+
 #loads json file with data for user point amounts
 with open('userData.txt') as json_file:
     userDict = json.load(json_file)
@@ -331,4 +334,4 @@ def updatePoints():
 
 
 
-client.run('ODI5MDk0NjQ5NjU4MDgxMzcx.YGzIkA.9XI53Yu_cVs8JGqSmdbsAAyefkc')
+client.run(discord_token)
