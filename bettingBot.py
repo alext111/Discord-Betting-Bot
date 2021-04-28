@@ -3,7 +3,11 @@ import os
 import json
 import asyncio
 
-client = discord.Client()
+intents = discord.Intents.default()
+intents.members = True
+intents.voice_states = True
+mute_list = []
+client = discord.Client(intents = intents)
 
 #insert bot token here
 discord_token = ''
@@ -25,17 +29,16 @@ class Bet:
 
     #adds user to selected side of betters
     def add_better(self, side: str, user):
-
         if not self.open:
             return 'No bet is open'
         elif side == self.side1:
-            if user.name not in self.betters1:
+            if user.name not in self.betters1 and user.name not in self.betters2:
                 self.betters1[user.name] = 0
                 return str(user.name) + ' entered into bet'
             else:
                 return 'User already entered bet'
         elif side == self.side2:
-            if user.name not in self.betters2:
+            if user.name not in self.betters1 and user.name not in self.betters2:
                 self.betters2[user.name] = 0
                 return str(user.name) + ' entered into bet'
             else:
@@ -45,11 +48,9 @@ class Bet:
 
     #adds points to bet amount for user
     def add_bet(self, side, user, amount):
-        print(side, user, amount)
         if not self.open:
             return 'No bet is open'
         if side == self.side1:
-            print(self.betters1[user])
             self.betters1[user] += int(amount)
             return amount + ' added to ' + user + "'s bet. Total bet is now " + str(self.betters1[user])
         elif side == self.side2:
@@ -67,17 +68,14 @@ class Bet:
 
     #closes bet by deciding winner and distributes points
     def end_bet(self, side):
-        print(self.betters1)
         if not self.open:
             return 'No bet is open'
         if side == self.side1:
-            print(userDict, self.betters1)
             for user in self.betters1:
                 userDict[user] += self.betters1[user]
             for user in self.betters2:
                 userDict[user] -= self.betters2[user]
             self.open = False
-            print(self.side1, type(self.side1))
             return 'Winner: ' + self.side1
         elif side == self.side2:
             for user in self.betters2:
@@ -123,7 +121,6 @@ async def on_message(message):
 
     #adds user to betting list
     if message.content.startswith('$start'):
-        print(type(message.author))
         response = add_user(message.author)
         await message.channel.send(response)
 
@@ -220,7 +217,17 @@ async def on_message(message):
         try:
             amount = await client.wait_for('message', check=check, timeout=60.0)
             side = get_side_from_user(message.author.name)
-            print(side, message.author, amount.content[1:])
+            if int(amount.content[1:]) < 0:
+                await message.channel.send("Put a positive number")
+                return
+            if side == bet.side1:
+                if int(amount.content[1:]) + bet.betters1[message.author.name] > userDict[message.author.name]:
+                    await message.channel.send("You do not have this many points")
+                    return
+            elif side == bet.side2:
+                if int(amount.content[1:]) + bet.betters2[message.author.name] > userDict[message.author.name]:
+                    await message.channel.send("You do not have this many points")
+                    return
             response = add_bet(side, message.author.name, amount.content[1:])
 
         except asyncio.TimeoutError:
@@ -261,16 +268,65 @@ async def on_message(message):
             await message.channel.send('Something broke')
 
         else:
-            updatePoints()
+            update_data()
             await message.channel.send(response)
 
+    #gives user 1000 points if they have zero
     if message.content.startswith('$beg'):
-        if userDict[message.author.name] == 0:
+        if userDict[message.author.name] <= 0:
             userDict[message.author.name] = 1000
             await message.channel.send(message.author.name + ' has been given 1000 points')
         else:
             await message.channel.send(message.author.name + ' still has points')
 
+    #pay points to server mute user for one minute and remute if they attempt to unmute
+    if message.content.startswith('$mute'):
+        if userDict[message.author.name] < 1000:
+            await message.channel.send('You do not have enough points')
+            return
+        else:
+            await message.channel.send("Who are you muting? This will cost 1000 points")
+
+            def check(reply):
+                return reply.content.startswith('$')
+
+            try:
+                reply = await client.wait_for('message', check=check, timeout=60.0)
+                if message.guild.get_member_named(reply.content[1:]) == None:
+                    await message.channel.send('User does not exist in server')
+                    return
+
+            except asyncio.TimeoutError:
+                await message.channel.send('Timeout')
+
+            except:
+                await message.channel.send('Something broke')
+
+            else:
+                user = message.guild.get_member_named(reply.content[1:])
+
+                if user.voice == None:
+                    await message.channel.send('User not in a voice channel')
+                elif user.voice.channel:
+                    await user.edit(mute=True)
+                    global mute_list
+                    mute_list.append(user)
+                    change_points(-1000, message.author.name)
+                    await message.channel.send(user.name + ' has been muted')
+                    await asyncio.sleep(10)
+                    mute_list.remove(user)
+                    await user.edit(mute=False)
+                    await message.channel.send(user.name + ' has been unmuted')
+
+#bot waits for changes in voice state of members in discord call
+@client.event
+async def on_voice_state_update(member, before, after):
+
+    #remutes server muted member if they attempt to unmute
+    if member in mute_list:
+        if before.mute == True and after.mute == False:
+            await member.edit(mute=True)
+    print(member, before.mute, after.mute)
 
 #add points to bet for user
 def add_bet(side, user, amount):
@@ -285,10 +341,8 @@ def add_user(user):
         userjson = json.dumps(userDict)
         with open('userData.txt', 'w') as outfile:
             json.dump(userjson, outfile)
-        print(userjson)
         return user.name + ' has been given 1000 points'
     else:
-        print(userDict)
         return user.name + ' already exists'
 
 #obtains balance from user data
@@ -327,11 +381,15 @@ def close_bet(side):
     output = bet.end_bet(side)
     return output
 
-def updatePoints():
+#updates user data in txt file
+def update_data():
     userjson = json.dumps(userDict)
     with open('userData.txt', 'w') as outfile:
         json.dump(userjson, outfile)
 
-
+#changes amount of points that a user has and updates txt file
+def change_points(amount, user):
+    userDict[user] += amount
+    update_data()
 
 client.run(discord_token)
