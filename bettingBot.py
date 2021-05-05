@@ -17,6 +17,7 @@ with open('userData.txt') as json_file:
     user_dict = json.load(json_file)
     user_dict = json.loads(user_dict)
 
+
 # class for bet object containing two sides and list of betters
 class Bet:
 
@@ -105,12 +106,15 @@ class Bet:
         else:
             return None
 
+
 bet = Bet('', '', {}, {}, False)
+
 
 # message for when bot is ready
 @client.event
 async def on_ready():
     print('We have logged in as {0,user}'.format(client))
+
 
 # bot waits for messages in discord channel
 @client.event
@@ -202,7 +206,7 @@ async def on_message(message):
             await message.channel.send(response)
 
     # allows users to add points to ongoing bet that they have already joined
-    if message.content.startswith('$add'):
+    if message.content.startswith('$add '):
         if not bet.open:
             await message.channel.send("No bet is open")
             return
@@ -211,31 +215,35 @@ async def on_message(message):
             await message.channel.send("You are not in the bet")
             return
 
-        await message.channel.send("How much are you betting?")
-
-        def check(reply):
-            return reply.content.startswith('$')
+        amount = message.content[5:]
+        print(amount, type(amount))
 
         try:
-            amount = await client.wait_for('message', check=check, timeout=60.0)
+            amount = int(amount)
+            print(amount)
+
+        except:
+            await message.channel.send('Please enter only numbers')
+            return
+
+        try:
+            print(type(amount))
             side = get_side_from_user(message.author.name)
-            if int(amount.content[1:]) < 0:
+            if amount < 0:
                 await message.channel.send("Put a positive number")
                 return
             if side == bet.side1:
-                if int(amount.content[1:]) + bet.betters1[message.author.name] > user_dict[message.author.name]:
+                if amount + bet.betters1[message.author.name] > user_dict[message.author.name]:
                     await message.channel.send("You do not have this many points")
                     return
             elif side == bet.side2:
-                if int(amount.content[1:]) + bet.betters2[message.author.name] > user_dict[message.author.name]:
+                if amount + bet.betters2[message.author.name] > user_dict[message.author.name]:
                     await message.channel.send("You do not have this many points")
                     return
-            response = add_bet(side, message.author.name, amount.content[1:])
-
-        except asyncio.TimeoutError:
-            await message.channel.send('Timeout')
+            response = add_bet(side, message.author.name, str(amount))
 
         except:
+
             await message.channel.send('Something broke')
 
         else:
@@ -350,14 +358,14 @@ async def on_message(message):
         $balance: View your own balance of points
         $open: Opens a bet if none is open
         $join: Enter yourself into the open bet
-        $add: Add points into joined bet
+        $add X: Add points into joined bet, type amount of points to enter in X
         $check: Displays bet info
         $betters: Lists users that have entered bet
         $close: End open bet and choose winners
         $beg: Get points if you have none left
-        $mute: Spend points to mute someone in a voice channel
+        $prizes: Display list of prizes to exchange with points
 
-        Warning: Multiple users sending commands will overlap each other. One user should use commands at a time.'''
+        Warning: Multiple users sending commands will overlap each other. One user should enter commands at a time.'''
         await message.channel.send(help_message)
 
     # lists prizes that can be bought with points
@@ -375,11 +383,13 @@ async def on_voice_state_update(member, before, after):
         if before.mute == True and after.mute == False:
             await member.edit(mute=True)
 
+
 # add points to bet for user
 def add_bet(side, user, amount):
     global bet
     output = bet.add_bet(side, user, amount)
     return output
+
 
 # initializes user into betting list by adding to json file and giving initial points
 def add_user(user):
@@ -392,6 +402,7 @@ def add_user(user):
     else:
         return user.name + ' already exists in system'
 
+
 # obtains balance from user data
 def get_balance(user):
     if user.name not in user_dict:
@@ -399,11 +410,13 @@ def get_balance(user):
     else:
         return user.name + "'s balance is " + str(user_dict[user.name])
 
+
 # obtains name of requested side
 def get_side_from_side(side):
     global bet
     output = bet.send_side_from_side(side)
     return output
+
 
 # obtains name of side that user is in
 def get_side_from_user(user):
@@ -411,16 +424,19 @@ def get_side_from_user(user):
     output = bet.send_side_from_user(user)
     return output
 
+
 # adds user to list of betters
 def join_bet(side, user):
     global bet
     output = bet.add_better(side, user)
     return output
 
+
 # opens bet with two sides
 def open_bet(side1, side2):
     global bet
     bet = Bet(side1, side2, {}, {}, True)
+
 
 # closes bet and distributes points
 def close_bet(side):
@@ -428,16 +444,19 @@ def close_bet(side):
     output = bet.end_bet(side)
     return output
 
+
 # updates user data in txt file
 def update_data():
     userjson = json.dumps(user_dict)
     with open('userData.txt', 'w') as outfile:
         json.dump(userjson, outfile)
 
+
 # changes amount of points that a user has and updates txt file
 def change_points(amount, user):
     user_dict[user] += amount
     update_data()
+
 
 # gets list of betters and their current bets for open bet
 def get_betters():
@@ -452,8 +471,10 @@ def get_betters():
         response += better + ': ' + str(bet.betters2[better]) + '\n'
     return response
 
+
 # rolls gacha system
 def roll_gacha():
     '''TODO'''
+
 
 client.run(discord_token)
