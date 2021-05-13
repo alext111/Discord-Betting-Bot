@@ -2,6 +2,9 @@ import discord
 import json
 import asyncio
 import os
+import random
+import requests
+import psycopg2
 
 intents = discord.Intents.default()
 intents.members = True
@@ -12,10 +15,15 @@ client = discord.Client(intents=intents)
 # insert discord bot token here
 discord_token = ''
 
-# loads json file with data for user point amounts
+# loads txt file with data for user point amounts
 with open('userData.txt') as json_file:
     user_dict = json.load(json_file)
     user_dict = json.loads(user_dict)
+
+# loads txt file with data for user pokemon
+with open('pokemonData.txt') as json_file:
+    pokemon_data = json.load(json_file)
+    pokemon_data = json.loads(pokemon_data)
 
 
 # class for bet object containing two sides and list of betters
@@ -69,6 +77,7 @@ class Bet:
         print(self.betters1, self.betters2)
         if not self.open:
             return 'No bet is open'
+
         if side == self.side1:
             for user in self.betters1:
                 user_dict[user] += self.betters1[user]
@@ -92,12 +101,7 @@ class Bet:
         else:
             return "Side doesn't exist"
 
-    def send_side_from_side(self, side):
-        if side == 'side1':
-            return self.side1
-        elif side == 'side2':
-            return self.side2
-
+    # returns side of bet that a user is currently in
     def send_side_from_user(self, user):
         if user in self.betters1:
             return self.side1
@@ -107,6 +111,104 @@ class Bet:
             return None
 
 
+# class for pokemon object with
+class Pokemon:
+
+    def __init__(self, name: str, picture: str, level: int, exp: int):
+        self.name = name
+        self.picture = picture
+        self.level = level
+        self.exp = exp
+
+    # adds experience points to pokemon
+    def add_exp(self, user: str, exp: int):
+        self.exp += exp
+        response = str(exp) + ' experience has been given to ' + self.name + '. '
+        response += self.level_check()
+        found, found_index = find_pokemon(self.name, user)
+        update_pokemon_data(user, found_index, self)
+        return response
+
+    # evolves pokemon if able
+    def evolve(self, user, found_index):
+        species = requests.get('https://pokeapi.co/api/v2/pokemon-species/' + self.name).json()
+        evolution_chain = requests.get(species['evolution_chain']['url']).json()
+
+        # if try statement fails, then the pokemon has no evolution chain
+        try:
+            if evolution_chain['chain']['species']['name'] == self.name and evolution_chain['chain'][
+                'evolves_to'] != []:
+                if evolution_chain['chain']['evolves_to'][0]['evolution_details'][0]['min_level'] <= self.level:
+                    print('evolve1')
+                    new_name = evolution_chain['chain']['evolves_to'][0]['species']['name']
+                    new_data = requests.get('https://pokeapi.co/api/v2/pokemon/' + new_name).json()
+                    new_picture = new_data['sprites']['other']['official-artwork']['front_default']
+                    new_pokemon = Pokemon(new_name, new_picture, self.level, self.exp)
+                    update_pokemon_data(user, found_index, new_pokemon)
+                    return 'Your ' + self.name.capitalize() + ' has evolved into ' + new_name.capitalize() + '!'
+                else:
+                    return 'Your pokemon cannot evolve'
+
+            elif evolution_chain['chain']['evolves_to'][0]['species']['name'] == self.name and \
+                    evolution_chain['chain']['evolves_to'][0]['evolves_to']:
+                if evolution_chain['chain']['evolves_to'][0]['evolves_to'][0]['evolution_details'][0][
+                    'min_level'] <= self.level:
+                    print('evolve2')
+                    new_name = evolution_chain['chain']['evolves_to'][0]['evolves_to'][0]['species']['name']
+                    new_data = requests.get('https://pokeapi.co/api/v2/pokemon/' + new_name).json()
+                    new_picture = new_data['sprites']['other']['official-artwork']['front_default']
+                    new_pokemon = Pokemon(new_name, new_picture, self.level, self.exp)
+                    update_pokemon_data(user, found_index, new_pokemon)
+                    return 'Your ' + self.name.capitalize() + ' has evolved into ' + new_name.capitalize() + '!'
+                else:
+                    return 'Your pokemon cannot evolve'
+
+            else:
+                return 'Your pokemon cannot evolve'
+        except:
+            return 'Your pokemon cannot evolve'
+
+        '''TODO'''
+
+    # exchanges pokemon for server points
+    def exchange_for_points(self, user):
+        user_dict[user] += self.exp
+        found, found_index = find_pokemon(self.name, user)
+        del (pokemon_data[user][found_index])
+        return 'Your ' + self.name.capitalize() + ' has been converted into ' + str(self.exp) + ' points'
+
+    # checks if pokemon has enough experience to level up
+    def level_check(self):
+        checking = True
+        leveled_up = False
+        species = requests.get('https://pokeapi.co/api/v2/pokemon-species/' + self.name).json()
+        growth_rate = requests.get(species['growth_rate']['url']).json()
+        found_index = -1
+
+        for index, dic in enumerate(growth_rate['levels']):
+            if dic['level'] == self.level + 1:
+                found_index = index
+                break
+
+        while checking:
+            if growth_rate['levels'][found_index]['experience'] <= self.exp:
+                self.level += 1
+                found_index += 1
+                leveled_up = True
+            else:
+                checking = False
+
+        if leveled_up:
+            return 'Your ' + self.name + ' is now level ' + str(self.level)
+        else:
+            return ''
+
+    # trade pokemon with another user
+    def trade(self):
+        '''TODO'''
+
+
+# creates ongoing bet object to be used for all bets
 bet = Bet('', '', {}, {}, False)
 
 
@@ -216,11 +318,9 @@ async def on_message(message):
             return
 
         amount = message.content[5:]
-        print(amount, type(amount))
 
         try:
             amount = int(amount)
-            print(amount)
 
         except:
             await message.channel.send('Please enter only numbers')
@@ -278,7 +378,7 @@ async def on_message(message):
             await message.channel.send('Something broke')
 
         else:
-            update_data()
+            write_point_data()
             await message.channel.send(response)
 
     # gives user 1000 points if they have zero
@@ -291,7 +391,7 @@ async def on_message(message):
 
     # pay points to server mute user for one minute and remute if they attempt to unmute
     if message.content.startswith('$mute'):
-        if user_dict[message.author.name] < 1000:
+        if not check_points(1000, message.author.name):
             await message.channel.send('You do not have enough points')
             return
         else:
@@ -323,7 +423,7 @@ async def on_message(message):
                     mute_list.append(user)
                     change_points(-1000, message.author.name)
                     await message.channel.send(user.name + ' has been muted')
-                    await asyncio.sleep(10)
+                    await asyncio.sleep(30)
                     mute_list.remove(user)
                     await user.edit(mute=False)
                     await message.channel.send(user.name + ' has been unmuted')
@@ -347,9 +447,96 @@ async def on_message(message):
 
     # rolls gacha system
     if message.content.startswith('$gacha'):
-        if user_dict[message.author.name] >= 1000:
-            pulls = roll_gacha()
+        if message.author.name not in pokemon_data:
+            await message.channel.send('User not in system. Please use $start')
+            return
+        if check_points(1000, message.author.name):
+            pokemon = roll_gacha()
+            roll_response = pokemon.name.capitalize() + '\n' + 'Level: ' + str(pokemon.level) + '\n' + 'Exp: ' + str(
+                pokemon.exp)
+            await message.channel.send(roll_response)
+            await message.channel.send(pokemon.picture)
+            change_points(-1000, message.author.name)
+            add_response = add_pokemon(pokemon, message.author.name)
+            await message.channel.send(add_response)
+        else:
+            await message.channel.send('You do not have enough points')
             '''TODO'''
+
+    # shows user's pokemon collection
+    if message.content.startswith('$collection'):
+        print(pokemon_data[message.author.name])
+        print(type(pokemon_data[message.author.name]))
+        response = ''
+        for info in pokemon_data[message.author.name]:
+            response += info['name'].capitalize() + ': Level ' + str(info['level']) + ', Exp ' + str(info['exp']) + '\n'
+        await message.channel.send(response)
+
+    # attempts to evolve pokemon
+    if message.content.startswith('$evolve '):
+
+        name = message.content[8:]
+
+        found, found_index = find_pokemon(name, message.author.name)
+
+        if not found:
+            await message.channel.send('You do not have that pokemon in your collection')
+            return
+
+        else:
+            pokemon = get_pokemon_data(message.author.name, found_index)
+            response = pokemon.evolve(message.author.name, found_index)
+            await message.channel.send(response)
+
+    # converts user points to experience for pokemon
+    if message.content.startswith('$exp '):
+
+        name = message.content[5:]
+
+        found, found_index = find_pokemon(name, message.author.name)
+
+        if not found:
+            await message.channel.send('You do not have that pokemon in your collection')
+            return
+
+        else:
+            await message.channel.send("How much exp are you giving? Please enter a number.")
+
+            def check(reply):
+                return reply.content.startswith('$')
+
+            try:
+                reply = await client.wait_for('message', check=check, timeout=60.0)
+                if int(reply.content[1:]) > user_dict[message.author.name]:
+                    await message.channel.send('You do not have that many points')
+                    return
+
+            except asyncio.TimeoutError:
+                await message.channel.send('Timeout')
+
+            except:
+                await message.channel.send('Something broke')
+
+            else:
+                pokemon = get_pokemon_data(message.author.name, found_index)
+                response = pokemon.add_exp(message.author.name, int(reply.content[1:]))
+                await message.channel.send(response)
+
+    # converts pokemon experience to points and deletes pokemon
+    if message.content.startswith('$melt '):
+
+        name = message.content[6:]
+
+        found, found_index = find_pokemon(name, message.author.name)
+
+        if not found:
+            await message.channel.send('You do not have that pokemon in your collection')
+            return
+
+        else:
+            pokemon = get_pokemon_data(message.author.name, found_index)
+            response = pokemon.exchange_for_points(message.author.name)
+            await message.channel.send(response)
 
     # help command for list of message commands
     if message.content.startswith('$help'):
@@ -358,12 +545,13 @@ async def on_message(message):
         $balance: View your own balance of points
         $open: Opens a bet if none is open
         $join: Enter yourself into the open bet
-        $add X: Add points into joined bet, type amount of points to enter in X
+        $add {number}: Add points into joined bet
         $check: Displays bet info
         $betters: Lists users that have entered bet
         $close: End open bet and choose winners
         $beg: Get points if you have none left
         $prizes: Display list of prizes to exchange with points
+        $collection: View pokemon collection
 
         Warning: Multiple users sending commands will overlap each other. One user should enter commands at a time.'''
         await message.channel.send(help_message)
@@ -372,8 +560,12 @@ async def on_message(message):
     if message.content.startswith('$prizes'):
         prize_message = '''Prize Commands:
         $mute: Mute a user in a voice channel for a minute (1000)
-        $gacha: Do a ten-roll in the gacha (1000)
+        $gacha: Do a roll in the gacha (1000)
+        $exp {pokemon name}: Convert your points into experience for your pokemon
+        $evolve {pokemon name}: Evolve your pokemon if the conditions are met
+        $melt {pokemon name}: Delete and convert your pokemon's exp to points
         '''
+
 
 # bot waits for changes in voice state of members in discord call
 @client.event
@@ -382,6 +574,16 @@ async def on_voice_state_update(member, before, after):
     if member in mute_list:
         if before.mute == True and after.mute == False:
             await member.edit(mute=True)
+
+
+# create connection to postgresql database
+def connectDB(self):
+    db = psycopg2.connect(
+        host='localhost',
+        database='discord_db',
+        user='testuser',
+        password='testpw')
+    return db
 
 
 # add points to bet for user
@@ -395,10 +597,15 @@ def add_bet(side, user, amount):
 def add_user(user):
     if user.name not in user_dict:
         user_dict[user.name] = 1000
-        userjson = json.dumps(user_dict)
+        user_json = json.dumps(user_dict)
         with open('userData.txt', 'w') as outfile:
-            json.dump(userjson, outfile)
-        return user.name + ' has been given 1000 points'
+            json.dump(user_json, outfile)
+    if user.name not in pokemon_data:
+        pokemon_data[user.name] = []
+        pokemon_json = json.dumps(pokemon_data)
+        with open('pokemonData.txt', 'w') as outfile:
+            json.dump(pokemon_json, outfile)
+        return user.name + ' has been entered into system'
     else:
         return user.name + ' already exists in system'
 
@@ -409,13 +616,6 @@ def get_balance(user):
         return 'User does not exist'
     else:
         return user.name + "'s balance is " + str(user_dict[user.name])
-
-
-# obtains name of requested side
-def get_side_from_side(side):
-    global bet
-    output = bet.send_side_from_side(side)
-    return output
 
 
 # obtains name of side that user is in
@@ -446,16 +646,31 @@ def close_bet(side):
 
 
 # updates user data in txt file
-def update_data():
-    userjson = json.dumps(user_dict)
+def write_point_data():
+    user_json = json.dumps(user_dict)
     with open('userData.txt', 'w') as outfile:
-        json.dump(userjson, outfile)
+        json.dump(user_json, outfile)
+
+
+# updates pokemon data in txt file
+def write_pokemon_data():
+    pokemon_json = json.dumps(pokemon_data)
+    with open('pokemonData.txt', 'w') as outfile:
+        json.dump(pokemon_json, outfile)
 
 
 # changes amount of points that a user has and updates txt file
 def change_points(amount, user):
     user_dict[user] += amount
-    update_data()
+    write_point_data()
+
+
+# check if user has enough points for commands
+def check_points(amount, user):
+    if user_dict[user] >= amount:
+        return True
+    else:
+        return False
 
 
 # gets list of betters and their current bets for open bet
@@ -474,7 +689,61 @@ def get_betters():
 
 # rolls gacha system
 def roll_gacha():
-    '''TODO'''
+    number = random.randrange(1, 899)
+    level = random.randrange(5, 31)
+    pokemon_data = requests.get('https://pokeapi.co/api/v2/pokemon/' + str(number)).json()
+    species = requests.get('https://pokeapi.co/api/v2/pokemon-species/' + str(number)).json()
+    growth_rate = requests.get(species['growth_rate']['url']).json()
+    exp = growth_rate['levels'][level - 1]['experience']
+    pokemon = Pokemon(pokemon_data['name'], pokemon_data['sprites']['other']['official-artwork']['front_default'],
+                      level, exp)
+    return pokemon
+
+
+# adds pokemon into data file for user's collection
+def add_pokemon(pokemon: Pokemon, user):
+    found, found_index = find_pokemon(pokemon.name, user)
+
+    if not found:
+        pokemon_data[user].append(pokemon.__dict__)
+        write_pokemon_data()
+        return pokemon.name.capitalize() + ' added to ' + user + "'s collection"
+    else:
+        pokemon_data[user][found_index]['exp'] += pokemon.exp
+        existing_pokemon = get_pokemon_data(user, found_index)
+        response = existing_pokemon.level_check()
+        pokemon_data[user][found_index]['level'] = existing_pokemon.level
+        write_pokemon_data()
+        response = pokemon.name.capitalize() + ' is already in ' + user + "'s collection. Pokemon experience has been converted. " + response
+        return response
+
+
+# find if pokemon exists in user's collection and returns location in data
+def find_pokemon(name, user):
+    found = False
+    found_index = -1
+    for index, entry in enumerate(pokemon_data[user]):
+        if name in entry.values():
+            found = True
+            found_index = index
+    return found, found_index
+
+
+# returns pokemon object from data found at a given index
+def get_pokemon_data(user, found_index):
+    existing_pokemon_dict = pokemon_data[user][found_index]
+    pokemon = Pokemon(existing_pokemon_dict['name'], existing_pokemon_dict['picture'], existing_pokemon_dict['level'],
+                      existing_pokemon_dict['exp'])
+    return pokemon
+
+
+# updates data for pokemon in user's collection
+def update_pokemon_data(user, found_index, pokemon: Pokemon):
+    pokemon_data[user][found_index]['name'] = pokemon.name
+    pokemon_data[user][found_index]['picture'] = pokemon.picture
+    pokemon_data[user][found_index]['level'] = pokemon.level
+    pokemon_data[user][found_index]['exp'] = pokemon.exp
+    write_pokemon_data()
 
 
 client.run(discord_token)
