@@ -1,1 +1,0 @@
-"{\"namnart\": 4000, \"streamingalt\": -7000, \"Owl\": 1197177, \"5pie\": 2000, \"Ninshu\": 1000}"
