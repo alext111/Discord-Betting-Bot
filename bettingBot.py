@@ -1,30 +1,35 @@
 import discord
-import json
 import asyncio
-import os
 import random
 import requests
-import psycopg2
+import pymongo
+from bson.objectid import ObjectId
+
+# discord bot permissions
 
 intents = discord.Intents.default()
 intents.members = True
 intents.voice_states = True
-mute_list = []
 client = discord.Client(intents=intents)
 
-# insert discord bot token here
+mute_list = []
+
+# insert tokens and database info here
+
 discord_token = ''
+mongouser = ''
+mongopw = ''
+mongodb = ''
 
-# loads txt file with data for user point amounts
-with open('userData.txt') as json_file:
-    user_dict = json.load(json_file)
-    user_dict = json.loads(user_dict)
+# text prefix for commands
 
-# loads txt file with data for user pokemon
-with open('pokemonData.txt') as json_file:
-    pokemon_data = json.load(json_file)
-    pokemon_data = json.loads(pokemon_data)
+prefix = 'b'
 
+#connect to mongoDB
+db_client = pymongo.MongoClient("mongodb+srv://" + mongouser + ":" + mongopw + "@cluster0.thott.mongodb.net/" + mongodb + "?retryWrites=true&w=majority")
+db = db_client.bettingDB
+db_pokemon = db.pokemon
+db_points = db.points
 
 # class for bet object containing two sides and list of betters
 class Bet:
@@ -80,20 +85,20 @@ class Bet:
 
         if side == self.side1:
             for user in self.betters1:
-                user_dict[user] += self.betters1[user]
+                change_points(self.betters1[user], user)
                 response += user + ': +' + str(self.betters1[user]) + '\n'
             for user in self.betters2:
-                user_dict[user] -= self.betters2[user]
+                change_points(-self.betters2[user], user)
                 response += user + ': -' + str(self.betters2[user]) + '\n'
             self.open = False
             return 'Winner: ' + self.side1 + '\n' + response
 
         elif side == self.side2:
             for user in self.betters2:
-                user_dict[user] += self.betters2[user]
+                change_points(self.betters2[user], user)
                 response += user + ': +' + str(self.betters2[user]) + '\n'
             for user in self.betters1:
-                user_dict[user] -= self.betters1[user]
+                change_points(-self.betters1[user], user)
                 response += user + ': -' + str(self.betters1[user]) + '\n'
             self.open = False
             return 'Winner: ' + self.side2 + '\n' + response
@@ -114,23 +119,24 @@ class Bet:
 # class for pokemon object with
 class Pokemon:
 
-    def __init__(self, name: str, picture: str, level: int, exp: int):
+    def __init__(self, name: str, user: str, picture: str, level: int, exp: int):
         self.name = name
+        self.user = user
         self.picture = picture
         self.level = level
         self.exp = exp
 
     # adds experience points to pokemon
-    def add_exp(self, user: str, exp: int):
+    def add_exp(self, exp: int, id: str):
+        print(self.exp, exp)
         self.exp += exp
         response = str(exp) + ' experience has been given to ' + self.name + '. '
         response += self.level_check()
-        found, found_index = find_pokemon(self.name, user)
-        update_pokemon_data(user, found_index, self)
+        update_pokemon_data(self.user, id, self)
         return response
 
     # evolves pokemon if able
-    def evolve(self, user, found_index):
+    def evolve(self, user, id):
         species = requests.get('https://pokeapi.co/api/v2/pokemon-species/' + self.name).json()
         evolution_chain = requests.get(species['evolution_chain']['url']).json()
 
@@ -143,8 +149,8 @@ class Pokemon:
                     new_name = evolution_chain['chain']['evolves_to'][0]['species']['name']
                     new_data = requests.get('https://pokeapi.co/api/v2/pokemon/' + new_name).json()
                     new_picture = new_data['sprites']['other']['official-artwork']['front_default']
-                    new_pokemon = Pokemon(new_name, new_picture, self.level, self.exp)
-                    update_pokemon_data(user, found_index, new_pokemon)
+                    new_pokemon = Pokemon(new_name, user, new_picture, self.level, self.exp)
+                    update_pokemon_data(user, id, new_pokemon)
                     return 'Your ' + self.name.capitalize() + ' has evolved into ' + new_name.capitalize() + '!'
                 else:
                     return 'Your pokemon cannot evolve'
@@ -157,8 +163,8 @@ class Pokemon:
                     new_name = evolution_chain['chain']['evolves_to'][0]['evolves_to'][0]['species']['name']
                     new_data = requests.get('https://pokeapi.co/api/v2/pokemon/' + new_name).json()
                     new_picture = new_data['sprites']['other']['official-artwork']['front_default']
-                    new_pokemon = Pokemon(new_name, new_picture, self.level, self.exp)
-                    update_pokemon_data(user, found_index, new_pokemon)
+                    new_pokemon = Pokemon(new_name, user, new_picture, self.level, self.exp)
+                    update_pokemon_data(user, id, new_pokemon)
                     return 'Your ' + self.name.capitalize() + ' has evolved into ' + new_name.capitalize() + '!'
                 else:
                     return 'Your pokemon cannot evolve'
@@ -168,13 +174,12 @@ class Pokemon:
         except:
             return 'Your pokemon cannot evolve'
 
-        '''TODO'''
 
     # exchanges pokemon for server points
-    def exchange_for_points(self, user):
-        user_dict[user] += self.exp
-        found, found_index = find_pokemon(self.name, user)
-        del (pokemon_data[user][found_index])
+    def exchange_for_points(self, user, id):
+        user_info = db.points.find_one({'name': user})
+        db_points.update_one({'name': user}, {'$set': {'name': user, 'points': user_info['points'] + self.exp}})
+        db_pokemon.delete_one({'user': user, '_id': ObjectId(id)})
         return 'Your ' + self.name.capitalize() + ' has been converted into ' + str(self.exp) + ' points'
 
     # checks if pokemon has enough experience to level up
@@ -203,9 +208,6 @@ class Pokemon:
         else:
             return ''
 
-    # trade pokemon with another user
-    def trade(self):
-        '''TODO'''
 
 
 # creates ongoing bet object to be used for all bets
@@ -226,17 +228,17 @@ async def on_message(message):
         return
 
     # adds user to betting list
-    if message.content.startswith('$start'):
-        response = add_user(message.author)
+    if message.content.startswith(prefix + 'start'):
+        response = add_user(message.author.name)
         await message.channel.send(response)
 
     # sends user's current balance
-    if message.content.startswith('$balance'):
-        response = get_balance(message.author)
+    if message.content.startswith(prefix + 'balance'):
+        response = get_balance(message.author.name)
         await message.channel.send(response)
 
     # open a bet with two sides based on user replies
-    if message.content.startswith('$open'):
+    if message.content.startswith(prefix + 'open'):
 
         global bet
 
@@ -247,7 +249,7 @@ async def on_message(message):
         await message.channel.send("Send name for first side")
 
         def check(reply):
-            return reply.content.startswith('$')
+            return reply.content.startswith(prefix)
 
         try:
             side1 = await client.wait_for('message', check=check, timeout=60.0)
@@ -276,25 +278,25 @@ async def on_message(message):
                 open_bet(side1.content[1:], side2.content[1:])
 
     # allow users to join an ongoing bet
-    if message.content.startswith('$join'):
+    if message.content.startswith(prefix + 'join'):
         if not bet.open:
             await message.channel.send("No bet is open")
             return
 
         await message.channel.send(
-            "Which side are you joining? (Type $1 or $2)\nSide 1: " + bet.side1 + '\nSide 2: ' + bet.side2)
+            "Which side are you joining?\nSide 1: " + bet.side1 + '\nSide 2: ' + bet.side2)
 
         def check(reply):
-            return reply.content.startswith('$')
+            return reply.content.startswith(prefix)
 
         try:
             reply = await client.wait_for('message', check=check, timeout=60.0)
-            if reply.content != '$1' and reply.content != '$2':
-                raise Exception("Only $1 or $2")
+            if reply.content != prefix + '1' and reply.content != prefix + '2':
+                raise Exception("Only 1 or 2")
             else:
-                if reply.content.startswith('$1'):
+                if reply.content.startswith(prefix + '1'):
                     side = bet.side1
-                elif reply.content.startswith('$2'):
+                elif reply.content.startswith(prefix + '2'):
                     side = bet.side2
                 response = join_bet(side, message.author)
 
@@ -308,9 +310,13 @@ async def on_message(message):
             await message.channel.send(response)
 
     # allows users to add points to ongoing bet that they have already joined
-    if message.content.startswith('$add '):
+    if message.content.startswith(prefix + 'add '):
         if not bet.open:
             await message.channel.send("No bet is open")
+            return
+
+        if not check_user(message.author.name):
+            await message.channel.send('You are not in the system. Please use $start')
             return
 
         if get_side_from_user(message.author.name) == None:
@@ -326,6 +332,8 @@ async def on_message(message):
             await message.channel.send('Please enter only numbers')
             return
 
+        points = db_points.find_one({'name': message.author.name})['points']
+
         try:
             print(type(amount))
             side = get_side_from_user(message.author.name)
@@ -333,11 +341,11 @@ async def on_message(message):
                 await message.channel.send("Put a positive number")
                 return
             if side == bet.side1:
-                if amount + bet.betters1[message.author.name] > user_dict[message.author.name]:
+                if amount + bet.betters1[message.author.name] > points:
                     await message.channel.send("You do not have this many points")
                     return
             elif side == bet.side2:
-                if amount + bet.betters2[message.author.name] > user_dict[message.author.name]:
+                if amount + bet.betters2[message.author.name] > points:
                     await message.channel.send("You do not have this many points")
                     return
             response = add_bet(side, message.author.name, str(amount))
@@ -350,24 +358,24 @@ async def on_message(message):
             await message.channel.send(response)
 
     # closes ongoing bet and distributes points to betters
-    if message.content.startswith('$close'):
+    if message.content.startswith(prefix + 'close'):
         if not bet.open:
             await message.channel.send("No bet is open")
             return
 
-        await message.channel.send("Which side won? (Type $1 or $2)\nSide 1: " + bet.side1 + '\nSide 2: ' + bet.side2)
+        await message.channel.send("Which side won?\nSide 1: " + bet.side1 + '\nSide 2: ' + bet.side2)
 
         def check(reply):
-            return reply.content.startswith('$')
+            return reply.content.startswith(prefix)
 
         try:
             reply = await client.wait_for('message', check=check, timeout=60.0)
-            if reply.content != '$1' and reply.content != '$2':
-                raise Exception("Only $1 or $2")
+            if reply.content != prefix + '1' and reply.content != prefix + '2':
+                raise Exception("Only 1 or 2")
             else:
-                if reply.content.startswith('$1'):
+                if reply.content.startswith(prefix + '1'):
                     side = bet.side1
-                elif reply.content.startswith('$2'):
+                elif reply.content.startswith(prefix + '2'):
                     side = bet.side2
                 response = close_bet(side)
 
@@ -378,19 +386,27 @@ async def on_message(message):
             await message.channel.send('Something broke')
 
         else:
-            write_point_data()
             await message.channel.send(response)
 
     # gives user 1000 points if they have zero
-    if message.content.startswith('$beg'):
-        if user_dict[message.author.name] <= 0:
-            user_dict[message.author.name] = 1000
+    if message.content.startswith(prefix + 'beg'):
+        if not check_user(message.author.name):
+            await message.channel.send('You are not in the system. Please use $start')
+            return
+
+        if db_points.find_one({'name': message.author.name})['points'] <= 0:
+            change_points(1000, message.author.name)
             await message.channel.send(message.author.name + ' has been given 1000 points')
         else:
             await message.channel.send(message.author.name + ' still has points')
 
+
     # pay points to server mute user for one minute and remute if they attempt to unmute
-    if message.content.startswith('$mute'):
+    if message.content.startswith(prefix + 'mute'):
+        if not check_user(message.author.name):
+            await message.channel.send('You are not in the system. Please use $start')
+            return
+
         if not check_points(1000, message.author.name):
             await message.channel.send('You do not have enough points')
             return
@@ -398,7 +414,7 @@ async def on_message(message):
             await message.channel.send("Who are you muting? This will cost 1000 points")
 
             def check(reply):
-                return reply.content.startswith('$')
+                return reply.content.startswith(prefix)
 
             try:
                 reply = await client.wait_for('message', check=check, timeout=60.0)
@@ -429,7 +445,7 @@ async def on_message(message):
                     await message.channel.send(user.name + ' has been unmuted')
 
     # returns sides of open bet
-    if message.content.startswith('$check'):
+    if message.content.startswith(prefix + 'check'):
         if not bet.open:
             await message.channel.send("No bet is open")
             return
@@ -437,7 +453,7 @@ async def on_message(message):
             await message.channel.send('Side 1: ' + bet.side1 + '\n' + 'Side 2: ' + bet.side2)
 
     # returns list of betters with their current bet
-    if message.content.startswith('$betters'):
+    if message.content.startswith(prefix + 'betters'):
         if not bet.open:
             await message.channel.send("No bet is open")
             return
@@ -446,56 +462,53 @@ async def on_message(message):
             await message.channel.send(response)
 
     # rolls gacha system
-    if message.content.startswith('$gacha'):
-        if message.author.name not in pokemon_data:
-            await message.channel.send('User not in system. Please use $start')
+    if message.content.startswith(prefix + 'gacha'):
+        if not check_user(message.author.name):
+            await message.channel.send('You are not in the system. Please use $start')
             return
         if check_points(1000, message.author.name):
-            pokemon = roll_gacha()
+            pokemon = roll_gacha(message.author.name)
             roll_response = pokemon.name.capitalize() + '\n' + 'Level: ' + str(pokemon.level) + '\n' + 'Exp: ' + str(
                 pokemon.exp)
             await message.channel.send(roll_response)
             await message.channel.send(pokemon.picture)
             change_points(-1000, message.author.name)
-            add_response = add_pokemon(pokemon, message.author.name)
+            add_response = add_pokemon(pokemon)
             await message.channel.send(add_response)
         else:
             await message.channel.send('You do not have enough points')
-            '''TODO'''
+
 
     # shows user's pokemon collection
-    if message.content.startswith('$collection'):
-        print(pokemon_data[message.author.name])
-        print(type(pokemon_data[message.author.name]))
+    if message.content.startswith(prefix + 'collection'):
+
+        collection = db_pokemon.find({'user': message.author.name})
+
         response = ''
-        for info in pokemon_data[message.author.name]:
-            response += info['name'].capitalize() + ': Level ' + str(info['level']) + ', Exp ' + str(info['exp']) + '\n'
+        for info in collection:
+            response += info['name'].capitalize() + '- Level: ' + str(info['level']) + ', Exp: ' + str(info['exp']) + ', Id: ' + str(info['_id']) + '\n'
         await message.channel.send(response)
 
     # attempts to evolve pokemon
-    if message.content.startswith('$evolve '):
+    if message.content.startswith(prefix + 'evolve '):
 
-        name = message.content[8:]
+        id = message.content[8:]
 
-        found, found_index = find_pokemon(name, message.author.name)
-
-        if not found:
+        if not find_pokemon(message.author.name, id):
             await message.channel.send('You do not have that pokemon in your collection')
             return
 
         else:
-            pokemon = get_pokemon_data(message.author.name, found_index)
-            response = pokemon.evolve(message.author.name, found_index)
+            pokemon = get_pokemon_data(message.author.name, id)
+            response = pokemon.evolve(message.author.name, id)
             await message.channel.send(response)
 
     # converts user points to experience for pokemon
-    if message.content.startswith('$exp '):
+    if message.content.startswith(prefix + 'exp '):
 
-        name = message.content[5:]
+        id = message.content[5:]
 
-        found, found_index = find_pokemon(name, message.author.name)
-
-        if not found:
+        if not find_pokemon(message.author.name, id):
             await message.channel.send('You do not have that pokemon in your collection')
             return
 
@@ -503,11 +516,11 @@ async def on_message(message):
             await message.channel.send("How much exp are you giving? Please enter a number.")
 
             def check(reply):
-                return reply.content.startswith('$')
+                return reply.content.startswith(prefix)
 
             try:
                 reply = await client.wait_for('message', check=check, timeout=60.0)
-                if int(reply.content[1:]) > user_dict[message.author.name]:
+                if not check_points(int(reply.content[1:]), message.author.name):
                     await message.channel.send('You do not have that many points')
                     return
 
@@ -518,53 +531,52 @@ async def on_message(message):
                 await message.channel.send('Something broke')
 
             else:
-                pokemon = get_pokemon_data(message.author.name, found_index)
-                response = pokemon.add_exp(message.author.name, int(reply.content[1:]))
+                pokemon = get_pokemon_data(message.author.name, id)
+                response = pokemon.add_exp(int(reply.content[1:]), id)
                 await message.channel.send(response)
 
     # converts pokemon experience to points and deletes pokemon
-    if message.content.startswith('$melt '):
+    if message.content.startswith(prefix + 'melt '):
 
-        name = message.content[6:]
+        id = message.content[6:]
 
-        found, found_index = find_pokemon(name, message.author.name)
-
-        if not found:
+        if not find_pokemon(message.author.name, id):
             await message.channel.send('You do not have that pokemon in your collection')
             return
 
         else:
-            pokemon = get_pokemon_data(message.author.name, found_index)
-            response = pokemon.exchange_for_points(message.author.name)
+            pokemon = get_pokemon_data(message.author.name, id)
+            response = pokemon.exchange_for_points(message.author.name, id)
             await message.channel.send(response)
 
     # help command for list of message commands
-    if message.content.startswith('$help'):
+    if message.content.startswith(prefix + 'help'):
         help_message = '''Command List:
-        $start: Initialize user into betting system
-        $balance: View your own balance of points
-        $open: Opens a bet if none is open
-        $join: Enter yourself into the open bet
-        $add {number}: Add points into joined bet
-        $check: Displays bet info
-        $betters: Lists users that have entered bet
-        $close: End open bet and choose winners
-        $beg: Get points if you have none left
-        $prizes: Display list of prizes to exchange with points
-        $collection: View pokemon collection
+        start: Initialize user into betting system
+        balance: View your own balance of points
+        open: Opens a bet if none is open
+        join: Enter yourself into the open bet
+        add {number}: Add points into joined bet
+        check: Displays bet info
+        betters: Lists users that have entered bet
+        close: End open bet and choose winners
+        beg: Get points if you have none left
+        prizes: Display list of prizes to exchange with points
+        collection: View pokemon collection
 
         Warning: Multiple users sending commands will overlap each other. One user should enter commands at a time.'''
         await message.channel.send(help_message)
 
     # lists prizes that can be bought with points
-    if message.content.startswith('$prizes'):
+    if message.content.startswith(prefix + 'prizes'):
         prize_message = '''Prize Commands:
-        $mute: Mute a user in a voice channel for a minute (1000)
-        $gacha: Do a roll in the gacha (1000)
-        $exp {pokemon name}: Convert your points into experience for your pokemon
-        $evolve {pokemon name}: Evolve your pokemon if the conditions are met
-        $melt {pokemon name}: Delete and convert your pokemon's exp to points
+        mute: Mute a user in a voice channel for a minute (1000)
+        gacha: Do a roll in the gacha (1000)
+        exp {pokemon name}: Convert your points into experience for your pokemon
+        evolve {pokemon name}: Evolve your pokemon if the conditions are met
+        melt {pokemon name}: Delete and convert your pokemon's exp to points
         '''
+        await message.channel.send(prize_message)
 
 
 # bot waits for changes in voice state of members in discord call
@@ -575,17 +587,6 @@ async def on_voice_state_update(member, before, after):
         if before.mute == True and after.mute == False:
             await member.edit(mute=True)
 
-
-# create connection to postgresql database
-def connectDB(self):
-    db = psycopg2.connect(
-        host='localhost',
-        database='discord_db',
-        user='testuser',
-        password='testpw')
-    return db
-
-
 # add points to bet for user
 def add_bet(side, user, amount):
     global bet
@@ -595,27 +596,20 @@ def add_bet(side, user, amount):
 
 # initializes user into betting list by adding to json file and giving initial points
 def add_user(user):
-    if user.name not in user_dict:
-        user_dict[user.name] = 1000
-        user_json = json.dumps(user_dict)
-        with open('userData.txt', 'w') as outfile:
-            json.dump(user_json, outfile)
-    if user.name not in pokemon_data:
-        pokemon_data[user.name] = []
-        pokemon_json = json.dumps(pokemon_data)
-        with open('pokemonData.txt', 'w') as outfile:
-            json.dump(pokemon_json, outfile)
-        return user.name + ' has been entered into system'
+    if not check_user(user):
+        db_points.insert_one({'name': user, 'points': 1000})
+        return user + ' has been entered into system'
     else:
-        return user.name + ' already exists in system'
+        return user + ' already exists in system'
 
 
 # obtains balance from user data
 def get_balance(user):
-    if user.name not in user_dict:
+    user_data = db_points.find_one({'name': user})
+    if user_data == None:
         return 'User does not exist'
     else:
-        return user.name + "'s balance is " + str(user_dict[user.name])
+        return user + "'s balance is " + str(user_data['points'])
 
 
 # obtains name of side that user is in
@@ -645,32 +639,40 @@ def close_bet(side):
     return output
 
 
-# updates user data in txt file
-def write_point_data():
-    user_json = json.dumps(user_dict)
-    with open('userData.txt', 'w') as outfile:
-        json.dump(user_json, outfile)
-
-
-# updates pokemon data in txt file
-def write_pokemon_data():
-    pokemon_json = json.dumps(pokemon_data)
-    with open('pokemonData.txt', 'w') as outfile:
-        json.dump(pokemon_json, outfile)
+# updates user data in database
+def write_point_data(user, amount):
+    db_info = db_points.find_one({'name': user})
+    print(db_info)
+    #db_points.update_one({'name': user, 'points': })
 
 
 # changes amount of points that a user has and updates txt file
 def change_points(amount, user):
-    user_dict[user] += amount
-    write_point_data()
+    print(amount, user)
+    user_data = db_points.find_one({'name': user})
+    print(user_data)
+    if user_data == None:
+        return 'User does not exist'
+    else:
+        db_points.update_one({'name': user}, {'$set': {'name': user, 'points': user_data['points'] + amount}})
+        return user + "'s points changed by " + str(amount)
 
 
 # check if user has enough points for commands
 def check_points(amount, user):
-    if user_dict[user] >= amount:
+    user_data = db_points.find_one({'name': user})
+    if user_data['points'] >= amount:
         return True
     else:
         return False
+
+
+# check if user is in database system
+def check_user(user):
+    if db_points.find_one({'name': user}) == None:
+        return False
+    else:
+        return True
 
 
 # gets list of betters and their current bets for open bet
@@ -688,62 +690,45 @@ def get_betters():
 
 
 # rolls gacha system
-def roll_gacha():
+def roll_gacha(user):
     number = random.randrange(1, 899)
     level = random.randrange(5, 31)
     pokemon_data = requests.get('https://pokeapi.co/api/v2/pokemon/' + str(number)).json()
     species = requests.get('https://pokeapi.co/api/v2/pokemon-species/' + str(number)).json()
     growth_rate = requests.get(species['growth_rate']['url']).json()
     exp = growth_rate['levels'][level - 1]['experience']
-    pokemon = Pokemon(pokemon_data['name'], pokemon_data['sprites']['other']['official-artwork']['front_default'],
+    pokemon = Pokemon(pokemon_data['name'], user, pokemon_data['sprites']['other']['official-artwork']['front_default'],
                       level, exp)
     return pokemon
 
 
 # adds pokemon into data file for user's collection
-def add_pokemon(pokemon: Pokemon, user):
-    found, found_index = find_pokemon(pokemon.name, user)
+def add_pokemon(pokemon: Pokemon):
 
-    if not found:
-        pokemon_data[user].append(pokemon.__dict__)
-        write_pokemon_data()
-        return pokemon.name.capitalize() + ' added to ' + user + "'s collection"
-    else:
-        pokemon_data[user][found_index]['exp'] += pokemon.exp
-        existing_pokemon = get_pokemon_data(user, found_index)
-        response = existing_pokemon.level_check()
-        pokemon_data[user][found_index]['level'] = existing_pokemon.level
-        write_pokemon_data()
-        response = pokemon.name.capitalize() + ' is already in ' + user + "'s collection. Pokemon experience has been converted. " + response
-        return response
+    dict = {'name': pokemon.name, 'user': pokemon.user, 'picture': pokemon.picture, 'level': pokemon.level, 'exp': pokemon.exp}
+    db_pokemon.insert_one(dict)
+    return pokemon.name.capitalize() + ' added to ' + pokemon.user + "'s collection"
 
 
 # find if pokemon exists in user's collection and returns location in data
-def find_pokemon(name, user):
-    found = False
-    found_index = -1
-    for index, entry in enumerate(pokemon_data[user]):
-        if name in entry.values():
-            found = True
-            found_index = index
-    return found, found_index
+def find_pokemon(user, id):
+    if db_pokemon.find_one({'user': user, '_id': ObjectId(id)}):
+        return True
+    else:
+        return False
 
 
 # returns pokemon object from data found at a given index
-def get_pokemon_data(user, found_index):
-    existing_pokemon_dict = pokemon_data[user][found_index]
-    pokemon = Pokemon(existing_pokemon_dict['name'], existing_pokemon_dict['picture'], existing_pokemon_dict['level'],
-                      existing_pokemon_dict['exp'])
+def get_pokemon_data(user, id):
+    info = db_pokemon.find_one({'user': user, '_id': ObjectId(id)})
+    pokemon = Pokemon(info['name'], info['user'], info['picture'], info['level'], info['exp'])
     return pokemon
 
 
 # updates data for pokemon in user's collection
-def update_pokemon_data(user, found_index, pokemon: Pokemon):
-    pokemon_data[user][found_index]['name'] = pokemon.name
-    pokemon_data[user][found_index]['picture'] = pokemon.picture
-    pokemon_data[user][found_index]['level'] = pokemon.level
-    pokemon_data[user][found_index]['exp'] = pokemon.exp
-    write_pokemon_data()
+def update_pokemon_data(user, id, pokemon: Pokemon):
+    new_data = {'name': pokemon.name, 'user': pokemon.user, 'picture': pokemon.picture, 'level': pokemon.level, 'exp': pokemon.exp}
+    db_pokemon.update_one({'user': user, '_id': ObjectId(id)}, {'$set': new_data})
 
 
 client.run(discord_token)
