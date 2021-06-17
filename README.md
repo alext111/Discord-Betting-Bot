@@ -1,7 +1,7 @@
 # Discord Betting Bot
 
 ## Description
- Discord bot that allows users to create bets for points that can be exchanged for server prizes. Prizes include server actions interacting with users or trading cards created using PokeApi. Bot data is stored in a AWS database using MondoDB with NoSQL.
+ Discord bot that allows users to create bets for points that can be exchanged for server prizes. Prizes include server actions interacting with users or trading cards created using PokeApi. Bot data is stored in an AWS database using MondoDB with NoSQL.
  
 ## How to use
  The code requires Python 3 which can be downloaded from https://www.python.org/downloads/. bettingBot.py contains the code for all bot functionality. Creating a Discord bot using the code can be done at https://discord.com/developers/applications. Create a bot using "New Application" and navigating to the "Bot" settings. Upon creation, the bot will have a token that must be placed into bettingBot.py in the discord_token variable in line 19. 
