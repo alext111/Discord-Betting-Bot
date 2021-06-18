@@ -9,3 +9,6 @@
  
  ## Dependencies
   The bot requires the following Python libraries: discord, asyncio, random, requests, pymongo, bson. These libraries already exist in the virtual environment folder, \venv\, but will require downloading if using an outside environment.
+
+## Live Demo
+![discordbot](https://user-images.githubusercontent.com/49249379/122614436-a476a000-d054-11eb-8b46-7cc32bf68583.gif)
